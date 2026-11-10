@@ -15,29 +15,10 @@ Biblioteca dinámica multiplataforma (C-ABI) de alto rendimiento para el anális
 
 ---
 
-## 📦 Instrucciones para subir a GitHub y generar las librerías
+## 📦 Incorporación en NetMail
 
-### 1. Inicializar el repositorio remoto
-
-Desde una terminal en esta carpeta (`c:\Users\Miguel\Documents\projects\netmail_sieve_assets`):
-
-```bash
-git remote add origin https://github.com/devMls/netmail-sieve-assets.git
-git branch -M main
-git push -u origin main
-```
-
-### 2. Compilación automática en GitHub Actions
-
-Una vez hecho el `push`:
-1. Ve a la pestaña **Actions** en tu repositorio de GitHub.
-2. Verás ejecutándose el workflow **Build Sieve Native Binaries** en paralelo sobre Windows, Ubuntu y macOS.
-3. Al finalizar (~2 minutos), descarga el artefacto **`netmail_sieve_runtimes`** (o desde la sección Releases si creas un tag `v0.1.0`).
-
-### 3. Incorporar en NetMail
-
-Descomprime el archivo descargado en la carpeta de NetMail:
-`c:\Users\Miguel\Documents\projects\netmail\src\NetMail.Protocol.Imap\`
+Descomprime el artefacto `netmail_sieve_runtimes.zip` generado por los workflows de GitHub Actions en la carpeta:
+`src/NetMail.Protocol.Imap/`
 
 La estructura resultante será exactamente la esperada por el runtime de .NET:
 
