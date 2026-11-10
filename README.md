@@ -22,7 +22,7 @@ Biblioteca dinámica multiplataforma (C-ABI) de alto rendimiento para el anális
 Desde una terminal en esta carpeta (`c:\Users\Miguel\Documents\projects\netmail_sieve_assets`):
 
 ```bash
-git remote add origin https://github.com/<TU_USUARIO>/netmail-sieve-assets.git
+git remote add origin https://github.com/devMls/netmail-sieve-assets.git
 git branch -M main
 git push -u origin main
 ```

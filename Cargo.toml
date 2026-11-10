@@ -6,7 +6,7 @@ authors = ["NetMail Developers <dev@netmail.local>"]
 license = "MIT OR Apache-2.0"
 description = "High-performance C-ABI shared library wrapping Sieve (RFC 5228/5230) for NetMail and .NET"
 readme = "README.md"
-repository = "https://github.com/your-username/netmail-sieve-assets"
+repository = "https://github.com/devMls/netmail-sieve-assets"
 
 [lib]
 name = "netmail_sieve"
