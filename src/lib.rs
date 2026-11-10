@@ -78,10 +78,10 @@ fn convert_action(action: &Action) -> ActionDto {
             reason: None,
             details: None,
         },
-        Action::Keep => ActionDto {
+        Action::Keep { flags } => ActionDto {
             action_type: "keep".to_string(),
             mailbox: None,
-            flags: None,
+            flags: Some(flags.clone()),
             recipient: None,
             reason: None,
             details: None,
@@ -94,7 +94,7 @@ fn convert_action(action: &Action) -> ActionDto {
             reason: None,
             details: None,
         },
-        Action::Redirect { recipient } => ActionDto {
+        Action::Redirect(recipient) => ActionDto {
             action_type: "redirect".to_string(),
             mailbox: None,
             flags: None,
@@ -102,7 +102,7 @@ fn convert_action(action: &Action) -> ActionDto {
             reason: None,
             details: None,
         },
-        Action::Reject { reason } => ActionDto {
+        Action::Reject(reason) => ActionDto {
             action_type: "reject".to_string(),
             mailbox: None,
             flags: None,
