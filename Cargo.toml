@@ -1,0 +1,26 @@
+[package]
+name = "sieve_support"
+version = "0.1.0"
+edition = "2021"
+authors = ["NetMail Developers <dev@netmail.local>"]
+license = "MIT OR Apache-2.0"
+description = "High-performance C-ABI shared library wrapping Sieve (RFC 5228/5230) for .NET and native consumers"
+readme = "README.md"
+repository = "https://github.com/your-username/sieve_support"
+
+[lib]
+name = "netmail_sieve"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+mailrs-sieve = "2.0.1"
+mailrs-sieve-core = "0.3.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[profile.release]
+opt-level = "z"        # Optimize for size
+lto = true             # Enable link-time optimization
+codegen-units = 1      # Maximize size optimizations across crates
+panic = "abort"        # Remove unwinding landing pads for smaller binary
+strip = true           # Strip debug symbols and line tables
