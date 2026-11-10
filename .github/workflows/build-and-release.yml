@@ -1,111 +1,111 @@
-name: Build Sieve Native Binaries
+name: Build and verify Sieve native assets
 
 on:
   push:
-    branches: [ main ]
-    tags: [ 'v*' ]
+    branches: [main]
+    tags: ['v*']
   pull_request:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  NETMAIL_SIEVE_SOURCE_REVISION: ${{ github.sha }}
+  CARGO_INCREMENTAL: '0'
 
 jobs:
   build-matrix:
-    name: Build for ${{ matrix.os }} (${{ matrix.target }})
+    name: Test and build ${{ matrix.rid }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
+          - os: windows-2022
             target: x86_64-pc-windows-msvc
-            artifact_name: netmail_sieve.dll
-            rid_path: runtimes/win-x64/native/netmail_sieve.dll
-            output_binary: target/x86_64-pc-windows-msvc/release/netmail_sieve.dll
-
-          - os: ubuntu-latest
+            rid: win-x64
+            arch: x86_64
+            library: netmail_sieve.dll
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            artifact_name: libnetmail_sieve.so
-            rid_path: runtimes/linux-x64/native/libnetmail_sieve.so
-            output_binary: target/x86_64-unknown-linux-gnu/release/libnetmail_sieve.so
-
-          - os: macos-latest
+            rid: linux-x64
+            arch: x86_64
+            library: libnetmail_sieve.so
+          - os: macos-15
             target: aarch64-apple-darwin
-            artifact_name: libnetmail_sieve-arm64.dylib
-            rid_path: runtimes/osx-arm64/native/libnetmail_sieve.dylib
-            output_binary: target/aarch64-apple-darwin/release/libnetmail_sieve.dylib
-
-          - os: macos-latest
+            rid: osx-arm64
+            arch: aarch64
+            library: libnetmail_sieve.dylib
+          - os: macos-15-intel
             target: x86_64-apple-darwin
-            artifact_name: libnetmail_sieve-x64.dylib
-            rid_path: runtimes/osx-x64/native/libnetmail_sieve.dylib
-            output_binary: target/x86_64-apple-darwin/release/libnetmail_sieve.dylib
-
+            rid: osx-x64
+            arch: x86_64
+            library: libnetmail_sieve.dylib
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           targets: ${{ matrix.target }}
-
-      - name: Build release dynamic library
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Prepare staged RID layout
+          components: rustfmt, clippy
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check format, lint and adapter regressions
+        run: |
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+          python -m unittest discover -s tests -p "test_*.py"
+      - name: Run reference unit tests and frozen corpus
+        run: cargo test --locked --manifest-path vendor/mailrs-sieve-core-0.3.0/Cargo.toml --tests
+      - name: Build release with functioning panic containment
+        run: cargo build --locked --release --target ${{ matrix.target }}
+      - name: Stage and exercise the actual native ABI
         shell: bash
         run: |
-          mkdir -p $(dirname "${{ matrix.rid_path }}")
-          cp "${{ matrix.output_binary }}" "${{ matrix.rid_path }}"
-
-      - name: Upload platform artifact
-        uses: actions/upload-artifact@v4
+          destination="stage/runtimes/${{ matrix.rid }}/native"
+          mkdir -p "$destination"
+          cp "target/${{ matrix.target }}/release/${{ matrix.library }}" "$destination/"
+          python tools/smoke_abi.py "$destination/${{ matrix.library }}" --expected-arch "${{ matrix.arch }}" --output "$destination/runtime-info.json"
+      - uses: actions/upload-artifact@v4
         with:
-          name: binary-${{ matrix.target }}
-          path: ${{ matrix.rid_path }}
+          name: binary-${{ matrix.rid }}
+          path: stage/
+          if-no-files-found: error
 
   package-bundle:
-    name: Package Combined .NET Runtimes Bundle
     needs: build-matrix
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
     steps:
-      - name: Download all built binaries
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binary-*
           path: staged_artifacts
-
-      - name: Assemble standard .NET runtimes/ folder
-        run: |
-          mkdir -p runtimes/win-x64/native
-          mkdir -p runtimes/linux-x64/native
-          mkdir -p runtimes/osx-arm64/native
-          mkdir -p runtimes/osx-x64/native
-
-          find staged_artifacts -type f -name "netmail_sieve.dll" -exec cp {} runtimes/win-x64/native/ \;
-          find staged_artifacts -type f -name "libnetmail_sieve.so" -exec cp {} runtimes/linux-x64/native/ \;
-          find staged_artifacts -type f -name "libnetmail_sieve.dylib" -exec cp {} runtimes/osx-arm64/native/ \;
-          find staged_artifacts -type f -name "libnetmail_sieve.dylib" -exec cp {} runtimes/osx-x64/native/ \;
-
-          echo "Directory structure created:"
-          find runtimes -type f
-
-          zip -r netmail_sieve_runtimes.zip runtimes
-
-      - name: Upload final runtimes.zip artifact
-        uses: actions/upload-artifact@v4
+          merge-multiple: true
+      - name: Verify architecture, version and revision before packaging
+        run: python tools/package_assets.py staged_artifacts netmail_sieve_runtimes.zip
+      - uses: actions/upload-artifact@v4
         with:
           name: netmail_sieve_runtimes
           path: netmail_sieve_runtimes.zip
-
-      - name: Publish to GitHub Release
+          if-no-files-found: error
+      - name: Publish verified bundle
         if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'latest' }}
-          name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'Pre-compiled Assets (latest)' }}
+          name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || 'Pre-compiled assets (latest)' }}
           files: netmail_sieve_runtimes.zip
+          fail_on_unmatched_files: true
           draft: false
           prerelease: ${{ !startsWith(github.ref, 'refs/tags/v') }}

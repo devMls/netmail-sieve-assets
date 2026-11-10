@@ -6,3 +6,6 @@ staged_artifacts/
 runtimes/
 .DS_Store
 Thumbs.db
+**/target/
+__pycache__/
+*.py[cod]
