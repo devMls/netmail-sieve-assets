@@ -1,6 +1,6 @@
-# sieve_support
+# netmail-sieve-assets
 
-Biblioteca dinámica multiplataforma (C-ABI) de alto rendimiento para el análisis sintáctico (AST), validación y evaluación de scripts **Sieve (RFC 5228)** y respuestas de ausencia **Vacation (RFC 5230)**, diseñada para ser consumida de forma nativa por [NetMail](https://github.com/your-username/netmail) y proyectos .NET 8/9.
+Biblioteca dinámica multiplataforma (C-ABI) de alto rendimiento para el análisis sintáctico (AST), validación y evaluación de scripts **Sieve (RFC 5228)** y respuestas de ausencia **Vacation (RFC 5230)**, empaquetada como asset reutilizable para [NetMail](https://github.com/your-username/netmail) y aplicaciones .NET 8/9.
 
 ---
 
@@ -19,10 +19,10 @@ Biblioteca dinámica multiplataforma (C-ABI) de alto rendimiento para el anális
 
 ### 1. Inicializar el repositorio remoto
 
-Desde una terminal en esta carpeta (`c:\Users\Miguel\Documents\projects\sieve_support`):
+Desde una terminal en esta carpeta (`c:\Users\Miguel\Documents\projects\netmail_sieve_assets`):
 
 ```bash
-git remote add origin https://github.com/<TU_USUARIO>/sieve_support.git
+git remote add origin https://github.com/<TU_USUARIO>/netmail-sieve-assets.git
 git branch -M main
 git push -u origin main
 ```
