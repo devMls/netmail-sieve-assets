@@ -32,6 +32,7 @@ const SUPPORTED: &[&str] = &[
     "envelope",   // RFC 5228 §5.4
     "imap4flags", // RFC 5232
     "subaddress", // RFC 5233 — `:user` / `:detail` address-part tags
+    "copy",       // RFC 3894 — `:copy` on fileinto/redirect (NetMail patch)
 ];
 
 fn is_supported(cap: &str) -> bool {
@@ -170,6 +171,7 @@ fn capability_for_tag(name: &str) -> Option<&'static str> {
     match name {
         "flags" => Some("imap4flags"),
         "user" | "detail" => Some("subaddress"),
+        "copy" => Some("copy"),
         _ => None,
     }
 }

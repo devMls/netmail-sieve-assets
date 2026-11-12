@@ -3,7 +3,7 @@
 
 /// Which slice of an `addr-spec` an `address` test consults.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AddressPart {
+pub enum AddressPart {
     /// Whole `local@domain` form (the RFC 5228 `:all` default).
     All,
     /// Local part only (left of `@`).
@@ -49,7 +49,7 @@ pub(crate) fn address_part_from_tags(tags: &[String]) -> AddressPart {
 /// (RFC 5233 §5.2's `:is ""`-on-undefined exception is intentionally
 /// **not** honored — it disagrees with sieve-rs, which is the
 /// oracle the wrapper swap will route to).
-pub(crate) fn scope_to_part(addr: &str, part: AddressPart) -> Option<String> {
+pub fn scope_to_part(addr: &str, part: AddressPart) -> Option<String> {
     match part {
         AddressPart::All => Some(addr.to_string()),
         AddressPart::LocalPart => Some(local_part(addr).to_string()),
@@ -84,7 +84,7 @@ fn local_part(addr: &str) -> &str {
 /// shapes (`alice@example.com` and `Name <alice@example.com>`)
 /// plus comma-separated lists. Quoted display names are kept
 /// trimmed.
-pub(crate) fn extract_addresses(value: &str) -> Vec<String> {
+pub fn extract_addresses(value: &str) -> Vec<String> {
     let mut out = Vec::new();
     for piece in value.split(',') {
         let trim = piece.trim();

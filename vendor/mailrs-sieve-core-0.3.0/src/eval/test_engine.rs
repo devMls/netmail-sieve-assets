@@ -7,7 +7,7 @@
 
 use crate::address::{address_part_from_tags, extract_addresses, scope_to_part};
 use crate::ast::{Argument, Envelope, MatchType, Test};
-use crate::match_str::match_string;
+use crate::compare::{Comparator, match_value};
 
 use super::EvalError;
 use super::context::MessageContext;
@@ -39,25 +39,96 @@ pub(super) fn eval_test(
             Ok(false)
         }
         "exists" => {
+            options(t, &[])?;
             let names = arg_strings_or_list(&t.args);
             Ok(names.iter().all(|n| !ctx.header_values(n).is_empty()))
         }
         "size" => eval_size(t, ctx),
-        "header" => Ok(eval_header(t, ctx)),
-        "address" => Ok(eval_address(t, ctx)),
-        "hasflag" => Ok(eval_hasflag(t, flags)),
-        "envelope" => Ok(eval_envelope_test(t, envelope)),
+        "header" => eval_header(t, ctx),
+        "address" => eval_address(t, ctx),
+        "hasflag" => eval_hasflag(t, flags),
+        "envelope" => eval_envelope_test(t, envelope),
         other => Err(EvalError::UnknownTest(other.to_string())),
     }
+}
+
+const MATCH_TAGS: &[&str] = &["is", "contains", "matches"];
+const ADDRESS_TAGS: &[&str] = &["all", "localpart", "domain", "user", "detail"];
+
+/// NetMail patch `netmail-rules-1`: tagged arguments are validated instead
+/// of silently ignored. `:comparator` consumes the first string argument
+/// (RFC 5228 §2.6.2: tagged arguments precede positional arguments);
+/// unknown tags such as `:regex`, `:count` or `:value` and unsupported
+/// comparators are errors, never a fallback to `:is`/`i;ascii-casemap`.
+struct Options<'t> {
+    match_type: MatchType,
+    comparator: Comparator,
+    tags: &'t [String],
+    args: &'t [Argument],
+}
+
+fn options<'t>(t: &'t Test, allowed: &[&str]) -> Result<Options<'t>, EvalError> {
+    let mut args = t.args.as_slice();
+    let mut comparator = None;
+    let mut match_type = None;
+    let mut part = None;
+    for tag in &t.tags {
+        let tag = tag.as_str();
+        if !allowed.contains(&tag) {
+            return Err(EvalError::UnsupportedTag {
+                context: t.name.clone(),
+                tag: tag.to_string(),
+            });
+        }
+        let duplicate = if tag == "comparator" {
+            let Some((Argument::String(name), rest)) = args.split_first() else {
+                return Err(EvalError::BadArg {
+                    cmd: t.name.clone(),
+                    detail: ":comparator expects a comparator name".into(),
+                });
+            };
+            args = rest;
+            let resolved = Comparator::from_name(name)
+                .ok_or_else(|| EvalError::UnsupportedComparator(name.clone()))?;
+            comparator.replace(resolved).is_some()
+        } else if MATCH_TAGS.contains(&tag) {
+            match_type.replace(tag).is_some()
+        } else if ADDRESS_TAGS.contains(&tag) {
+            part.replace(tag).is_some()
+        } else {
+            false
+        };
+        if duplicate {
+            return Err(EvalError::BadArg {
+                cmd: t.name.clone(),
+                detail: format!("conflicting or duplicate tag :{tag}"),
+            });
+        }
+    }
+    Ok(Options {
+        match_type: MatchType::from_tags(&t.tags),
+        comparator: comparator.unwrap_or_default(),
+        tags: &t.tags,
+        args,
+    })
+}
+
+fn string_options(t: &Test, address: bool) -> Result<Options<'_>, EvalError> {
+    let mut allowed: Vec<&str> = MATCH_TAGS.to_vec();
+    allowed.push("comparator");
+    if address {
+        allowed.extend_from_slice(ADDRESS_TAGS);
+    }
+    options(t, &allowed)
 }
 
 /// RFC 5228 §5.4 `envelope` test. Inspects the caller-supplied
 /// `from` / `to` / `auth` envelope state with the requested
 /// match-type + address-part semantics.
-fn eval_envelope_test(t: &Test, envelope: &Envelope) -> bool {
-    let mt = MatchType::from_tags(&t.tags);
-    let part = address_part_from_tags(&t.tags);
-    let (parts, values) = pair_lists(&t.args);
+fn eval_envelope_test(t: &Test, envelope: &Envelope) -> Result<bool, EvalError> {
+    let o = string_options(t, true)?;
+    let part = address_part_from_tags(o.tags);
+    let (parts, values) = pair_lists(o.args);
     for part_name in &parts {
         let candidates = envelope_field(envelope, part_name);
         for addr in candidates {
@@ -65,13 +136,13 @@ fn eval_envelope_test(t: &Test, envelope: &Envelope) -> bool {
                 continue; // undefined :detail (no `+`) → skip
             };
             for needle in &values {
-                if match_string(mt, &scoped, needle) {
-                    return true;
+                if match_value(o.match_type, o.comparator, &scoped, needle) {
+                    return Ok(true);
                 }
             }
         }
     }
-    false
+    Ok(false)
 }
 
 /// Resolve `from` / `to` / `auth` (RFC 5228 §5.4, case-insensitive
@@ -88,57 +159,60 @@ fn envelope_field(envelope: &Envelope, name: &str) -> Vec<String> {
 /// RFC 5232 §5.4 `hasflag` — true iff any flag in the test arg
 /// list matches any flag in the implicit flags variable, using
 /// the requested match-type (defaults to `:is`, case-insensitive).
-fn eval_hasflag(t: &Test, flags: &[String]) -> bool {
-    let mt = MatchType::from_tags(&t.tags);
-    let needles = match t.args.first() {
+fn eval_hasflag(t: &Test, flags: &[String]) -> Result<bool, EvalError> {
+    let o = string_options(t, false)?;
+    let needles = match o.args.first() {
         Some(Argument::String(s)) => vec![s.clone()],
         Some(Argument::StringList(v)) => v.clone(),
-        _ => return false,
+        _ => return Ok(false),
     };
     for needle in &needles {
         for held in flags {
-            if match_string(mt, held, needle) {
-                return true;
+            if match_value(o.match_type, o.comparator, held, needle) {
+                return Ok(true);
             }
         }
     }
-    false
+    Ok(false)
 }
 
 fn eval_size(t: &Test, ctx: &MessageContext<'_>) -> Result<bool, EvalError> {
+    options(t, &["over", "under"])?;
+    let over = t.tags.iter().any(|s| s == "over");
+    let under = t.tags.iter().any(|s| s == "under");
     let n = match t.args.first() {
-        Some(Argument::Number(n)) => *n,
+        Some(Argument::Number(n)) if over != under && t.args.len() == 1 => *n,
         _ => {
             return Err(EvalError::BadArg {
                 cmd: "size".into(),
-                detail: "expects numeric size".into(),
+                detail: "expects exactly one of :over/:under and a numeric size".into(),
             });
         }
     };
     let size = ctx.body_size();
-    let under = t.tags.iter().any(|s| s == "under");
     Ok(if under { size < n } else { size > n })
 }
 
-fn eval_header(t: &Test, ctx: &MessageContext<'_>) -> bool {
-    let mt = MatchType::from_tags(&t.tags);
-    let (names, values) = pair_lists(&t.args);
+fn eval_header(t: &Test, ctx: &MessageContext<'_>) -> Result<bool, EvalError> {
+    let o = string_options(t, false)?;
+    let (names, values) = pair_lists(o.args);
     for name in &names {
-        for hv in ctx.header_values(name) {
+        // RFC 5228 §2.7.2: compare decoded header values.
+        for hv in ctx.decoded_header_values(name) {
             for needle in &values {
-                if match_string(mt, &hv, needle) {
-                    return true;
+                if match_value(o.match_type, o.comparator, &hv, needle) {
+                    return Ok(true);
                 }
             }
         }
     }
-    false
+    Ok(false)
 }
 
-fn eval_address(t: &Test, ctx: &MessageContext<'_>) -> bool {
-    let mt = MatchType::from_tags(&t.tags);
-    let part = address_part_from_tags(&t.tags);
-    let (names, values) = pair_lists(&t.args);
+fn eval_address(t: &Test, ctx: &MessageContext<'_>) -> Result<bool, EvalError> {
+    let o = string_options(t, true)?;
+    let part = address_part_from_tags(o.tags);
+    let (names, values) = pair_lists(o.args);
     for name in &names {
         for hv in ctx.header_values(name) {
             for addr in extract_addresses(&hv) {
@@ -146,14 +220,14 @@ fn eval_address(t: &Test, ctx: &MessageContext<'_>) -> bool {
                     continue; // undefined :detail (no `+`) → skip
                 };
                 for needle in &values {
-                    if match_string(mt, &scoped, needle) {
-                        return true;
+                    if match_value(o.match_type, o.comparator, &scoped, needle) {
+                        return Ok(true);
                     }
                 }
             }
         }
     }
-    false
+    Ok(false)
 }
 
 /// Collect every `String` / `StringList` arg into a flat vector

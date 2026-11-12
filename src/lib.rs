@@ -6,6 +6,7 @@
 
 mod analysis;
 mod edit;
+mod rules;
 mod source;
 
 use mailrs_sieve_core::{eval_script_with_envelope, Action, Envelope};
@@ -16,16 +17,22 @@ use std::os::raw::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 const MAX_MESSAGE_BYTES: usize = 32 * 1024 * 1024;
+/// Snapshot batches carry decoded headers and optional body text.
+const MAX_BATCH_BYTES: usize = 16 * 1024 * 1024;
 
 unsafe fn read<'a>(pointer: *const c_char) -> Result<&'a str, String> {
+    read_limited(pointer, source::MAX_SCRIPT_BYTES)
+}
+
+unsafe fn read_limited<'a>(pointer: *const c_char, limit: usize) -> Result<&'a str, String> {
     if pointer.is_null() {
         return Err("InvalidInput: null string pointer".into());
     }
     let value = CStr::from_ptr(pointer)
         .to_str()
         .map_err(|_| "InvalidInput: invalid UTF-8")?;
-    if value.len() > source::MAX_SCRIPT_BYTES {
-        return Err("InputLimit: string exceeds 256 KiB".into());
+    if value.len() > limit {
+        return Err(format!("InputLimit: string exceeds {} KiB", limit / 1024));
     }
     Ok(value)
 }
@@ -50,11 +57,13 @@ pub extern "C" fn sieve_runtime_info_json() -> *mut c_char {
     export(|| {
         Ok(json!({"success":true,"abi_version":2,"schema_version":2,
         "version":env!("CARGO_PKG_VERSION"),"reference":"mailrs-sieve-core 0.3.0",
-        "reference_patch":"netmail-source-spans-1","arch":std::env::consts::ARCH,"os":std::env::consts::OS,
+        "reference_patch":"netmail-source-spans-1+netmail-rules-1","arch":std::env::consts::ARCH,"os":std::env::consts::OS,
         "source_revision":option_env!("NETMAIL_SIEVE_SOURCE_REVISION"),
         "max_script_bytes":source::MAX_SCRIPT_BYTES,"max_message_bytes":MAX_MESSAGE_BYTES,
+        "max_batch_bytes":MAX_BATCH_BYTES,"rules_schema":rules::ir::SCHEMA,
         "offset_unit":"utf8_bytes","validation":"syntax_only; remote validation is required",
-        "features":["typed_ast","lossless_edit_plan","explicit_vacation_target","smtp_envelope","vacation_parameters"]}))
+        "features":["typed_ast","lossless_edit_plan","explicit_vacation_target","smtp_envelope","vacation_parameters",
+            "rules_ir_v1","comparator_octet","strict_tags","encoded_word_headers","copy"]}))
     })
 }
 
@@ -267,6 +276,64 @@ pub extern "C" fn sieve_eval_actions_with_envelope_json(
         let env = serde_json::from_str::<EnvelopeInput>(unsafe { read(envelope) }?)
             .map_err(|e| format!("InvalidRequest: {e}"))?;
         evaluate(script, message, len, env)
+    })
+}
+
+/// Field × operator × backend catalogue of the rule IR.
+#[no_mangle]
+pub extern "C" fn rules_catalog_json() -> *mut c_char {
+    export(|| Ok(rules::catalog::catalog()))
+}
+
+/// Validate a rule set; returns its canonical JSON and local coverage.
+#[no_mangle]
+pub extern "C" fn rules_validate_json(rules_json: *const c_char) -> *mut c_char {
+    export(|| rules::validate(unsafe { read(rules_json) }?))
+}
+
+/// Compile a rule set into a NetMail Sieve region for the announced
+/// server extensions: `{"rules":{…},"server_capabilities":[…]}`.
+#[no_mangle]
+pub extern "C" fn rules_compile_sieve_json(request: *const c_char) -> *mut c_char {
+    export(|| {
+        let request = serde_json::from_str::<rules::compile::Request>(unsafe { read(request) }?)
+            .map_err(|e| format!("InvalidRequest: {e}"))?;
+        rules::compile::compile(request)
+    })
+}
+
+/// Recognise NetMail and common third-party rules in a script; everything
+/// else is reported as preserved external source.
+#[no_mangle]
+pub extern "C" fn rules_import_sieve_json(script: *const c_char) -> *mut c_char {
+    export(|| rules::import::import(unsafe { read(script) }?))
+}
+
+/// Replace, insert or remove the NetMail rules region with an edit plan.
+#[no_mangle]
+pub extern "C" fn rules_apply_region_json(
+    script: *const c_char,
+    request: *const c_char,
+) -> *mut c_char {
+    export(|| {
+        let request = serde_json::from_str::<rules::region::Request>(unsafe { read(request) }?)
+            .map_err(|e| format!("InvalidRequest: {e}"))?;
+        rules::region::apply(unsafe { read(script) }?, request)
+    })
+}
+
+/// Evaluate a rule set against a batch of normalised message snapshots.
+/// No mutation or I/O: the result is a plan per message.
+#[no_mangle]
+pub extern "C" fn rules_evaluate_batch_json(
+    rules_json: *const c_char,
+    messages_json: *const c_char,
+) -> *mut c_char {
+    export(|| {
+        let set = rules::ir::parse_rule_set(unsafe { read(rules_json) }?)?;
+        rules::evaluate::evaluate(&set, unsafe {
+            read_limited(messages_json, MAX_BATCH_BYTES)
+        }?)
     })
 }
 

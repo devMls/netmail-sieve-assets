@@ -58,6 +58,10 @@ version = "1"
 [dependencies.memchr]
 version = "2"
 
+# NetMail patch `netmail-rules-1`: RFC 2047 charset decoding.
+[dependencies.encoding_rs]
+version = "0.8"
+
 [dependencies.thiserror]
 version = "2"
 

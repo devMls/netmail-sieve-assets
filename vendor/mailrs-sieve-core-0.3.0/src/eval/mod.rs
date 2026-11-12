@@ -2,6 +2,8 @@
 //! emit a list of `Action`s.
 
 mod context;
+#[cfg(test)]
+mod netmail_tests;
 mod test_engine;
 
 use crate::ast::{Action, Argument, Command, Envelope, Test};
@@ -58,6 +60,20 @@ pub enum EvalError {
     /// actions").
     #[error("require out of order: must appear before any other action")]
     RequireOutOfOrder,
+    /// NetMail patch `netmail-rules-1`: a tagged argument the evaluator
+    /// does not implement (`:regex`, `:count`, `:create`, …). Reported
+    /// instead of evaluating with a different match type.
+    #[error("unsupported tag :{tag} in {context:?}")]
+    UnsupportedTag {
+        /// Test or command carrying the tag.
+        context: String,
+        /// Tag name without the leading colon.
+        tag: String,
+    },
+    /// NetMail patch `netmail-rules-1`: a `:comparator` other than
+    /// `i;ascii-casemap` or `i;octet`.
+    #[error("unsupported comparator {0:?}")]
+    UnsupportedComparator(String),
 }
 
 /// Evaluate a Sieve script against a message. Returns the
@@ -132,6 +148,7 @@ fn eval_command(
     match cmd.name.as_str() {
         "require" => Ok(()), // validated upstream by `capabilities::validate`
         "keep" => {
+            check_tags(cmd, &["flags"])?;
             let local = override_flags_from_tag(&cmd.args);
             state.actions.push(Action::Keep {
                 flags: local.unwrap_or_else(|| state.flags.clone()),
@@ -145,6 +162,7 @@ fn eval_command(
             Ok(())
         }
         "fileinto" => {
+            check_tags(cmd, &["flags", "copy"])?;
             let arg = first_string(&cmd.args).ok_or_else(|| EvalError::BadArg {
                 cmd: "fileinto".into(),
                 detail: "expects string mailbox name".into(),
@@ -154,7 +172,10 @@ fn eval_command(
                 mailbox: arg.to_string(),
                 flags: local.unwrap_or_else(|| state.flags.clone()),
             });
-            state.explicit_action = true;
+            // RFC 3894: `:copy` does not cancel the implicit keep.
+            if !has_tag(&cmd.args, "copy") {
+                state.explicit_action = true;
+            }
             Ok(())
         }
         "setflag" => {
@@ -180,12 +201,15 @@ fn eval_command(
             Ok(())
         }
         "redirect" => {
+            check_tags(cmd, &["copy"])?;
             let arg = first_string(&cmd.args).ok_or_else(|| EvalError::BadArg {
                 cmd: "redirect".into(),
                 detail: "expects string address".into(),
             })?;
             state.actions.push(Action::Redirect(arg.to_string()));
-            state.explicit_action = true;
+            if !has_tag(&cmd.args, "copy") {
+                state.explicit_action = true;
+            }
             Ok(())
         }
         "reject" => {
@@ -257,20 +281,50 @@ fn eval_command(
 
 /// Find the first **positional** string argument, skipping any
 /// `:tag <value>` pairs (e.g. `:flags "\Seen"` in RFC 5232
-/// `fileinto :flags "\Seen" "Inbox"`).
+/// `fileinto :flags "\Seen" "Inbox"`). NetMail patch: only `:flags`
+/// consumes a value; `:copy` (RFC 3894) is a flag-style tag.
 fn first_string(args: &[Argument]) -> Option<&str> {
     let mut i = 0;
     while i < args.len() {
         match &args[i] {
-            Argument::Tag(_) => {
+            Argument::Tag(t) if t == "flags" => {
                 // A tag consumes its value argument; jump past both.
                 i += 2;
             }
+            Argument::Tag(_) => i += 1,
             Argument::String(s) => return Some(s.as_str()),
             _ => i += 1,
         }
     }
     None
+}
+
+fn has_tag(args: &[Argument], name: &str) -> bool {
+    args.iter().any(|a| matches!(a, Argument::Tag(t) if t == name))
+}
+
+/// NetMail patch: reject unknown or repeated command tags instead of
+/// ignoring them (e.g. `fileinto :create`, which needs `mailbox`).
+fn check_tags(cmd: &Command, allowed: &[&str]) -> Result<(), EvalError> {
+    let mut seen = Vec::new();
+    for a in &cmd.args {
+        if let Argument::Tag(t) = a {
+            if !allowed.contains(&t.as_str()) {
+                return Err(EvalError::UnsupportedTag {
+                    context: cmd.name.clone(),
+                    tag: t.clone(),
+                });
+            }
+            if seen.contains(&t) {
+                return Err(EvalError::BadArg {
+                    cmd: cmd.name.clone(),
+                    detail: format!("duplicate tag :{t}"),
+                });
+            }
+            seen.push(t);
+        }
+    }
+    Ok(())
 }
 
 fn first_test(args: &[Argument]) -> Option<&Test> {

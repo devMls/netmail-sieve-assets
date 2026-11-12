@@ -1,8 +1,8 @@
 # netmail-sieve-assets
 
 Runtime C-ABI para [NetMail](https://gitlab.com/mls_dev/netmail), basado en
-`mailrs-sieve-core 0.3.0` (MIT OR Apache-2.0). Versión del adaptador: **0.2.0**;
-ABI y esquema JSON: **2**. El motor no realiza I/O, publica scripts ni envía correo.
+`mailrs-sieve-core 0.3.0` (MIT OR Apache-2.0). Versión del adaptador: **0.3.0**;
+ABI y esquema JSON: **2**; IR de reglas: **`netmail.rules/1`** (feature `rules_ir_v1`). El motor no realiza I/O, publica scripts ni envía correo.
 
 ## Uso de la referencia
 
@@ -75,6 +75,12 @@ UTF-16 de C#. El cliente comprueba `abi_version` antes de habilitar la edición.
 | `sieve_edit_vacation_json(script, request)` | Edición explícita de un objetivo con precondición de contenido |
 | `sieve_eval_actions_json(script, bytes, len)` | Acciones del evaluador de referencia sin sobre SMTP |
 | `sieve_eval_actions_with_envelope_json(script, bytes, len, envelope)` | Lo mismo con `from`, `to[]` y `auth` SMTP explícitos |
+| `rules_catalog_json()` | Catálogo campo × operador × backend (`exact`/`provider_defined`/`client_only`/`unsupported`) |
+| `rules_validate_json(rules)` | Validación del IR y JSON canónico con valores por defecto |
+| `rules_compile_sieve_json(request)` | Región Sieve de NetMail, `require` mínimo y estado por regla para las extensiones del servidor |
+| `rules_import_sieve_json(script)` | Reglas reconocidas (NetMail, Roundcube) con `reversible`; el resto como bloques preservados |
+| `rules_apply_region_json(script, request)` | Plan de edición que sustituye, inserta o retira la región con precondición de contenido |
+| `rules_evaluate_batch_json(rules, messages)` | Evaluación local contra snapshots normalizados: plan, explicación y diferidos |
 
 La validación sintáctica no garantiza soporte semántico de una extensión ni que
 el servidor admita un script. El evaluador local de la referencia tiene un
@@ -83,6 +89,56 @@ edición remota, pero no evaluarse localmente. Se conservan los errores, sin
 degradarlos a una entrega o a un estado «ausencia desactivada». La compatibilidad
 de cada operador/tag para ejecución local debe verificarse por separado; el
 resultado `local_capability_validation` solo comprueba declaraciones de extensiones.
+
+## Reglas (`netmail.rules/1`)
+
+Un único IR describe las reglas deseadas de una cuenta. El compilador Sieve, el
+importador y la evaluación local lo consumen y usan las mismas funciones de la
+referencia (`match_value`, `escape_glob`, `scope_to_part`), por lo que una regla
+`exact` decide igual en local y en el servidor para los mismos valores
+decodificados. Una prueba generativa lo comprueba con 2.400 pares
+regla/mensaje contra `sieve_eval_actions_json` del script compilado.
+
+```json
+{"schema": 1, "rules": [{
+  "id": "r1", "name": "Facturas", "enabled": true, "revision": 3, "match": "all",
+  "conditions": [{"field": "subject", "op": "contains", "values": ["Factura", "Presupuesto"]},
+                 {"field": "from", "op": "ends_with", "address_part": "domain", "values": ["proveedor.es"]}],
+  "exceptions": [{"field": "list_id", "op": "exists"}],
+  "actions": [{"type": "mark_read"}, {"type": "move", "mailbox": "Facturas"}, {"type": "stop"}]
+}]}
+```
+
+- Campos: `from`, `sender`, `to`, `cc`, `to_or_cc`, `subject`, `header` (+`header`),
+  `list_id`, `size`, `has_attachment`, `attachment_name`, `body_text`. Operadores:
+  `is`, `contains`, `starts_with`, `ends_with`, `matches`, `exists`, `over`, `under`;
+  `negate` invierte una condición. Comparadores: `ascii_casemap` (por defecto
+  RFC 5228), `octet` y `unicode_fold` (solo local: minúsculas Unicode sin acentos).
+- Semántica: reglas en orden; condiciones `all`/`any` (sin condiciones = todos);
+  una excepción que coincide impide la regla; varios valores = cualquiera. Las
+  acciones de flag (`mark_read`, `flag`, `add_tag`) se ejecutan primero y se
+  **acumulan** como la variable interna de RFC 5232: valen para las entregas
+  posteriores de esa y de las siguientes reglas y para el keep implícito. `move`
+  entrega y cancela el keep implícito; `copy` entrega una copia (RFC 3894) y lo
+  conserva; varias `move` producen varias entregas, igual que Sieve. `stop` va al final.
+- `starts_with`/`ends_with` se compilan a `:matches` con escape de `*`, `?` y `\`.
+- Compilación: cada regla devuelve `sieve` (`exact`, `provider_defined` para
+  `body`, `unsupported` con motivos: campo sin equivalente, comparador local,
+  extensión no anunciada, efecto local) y `local` (`redirect` no se ejecuta en
+  local). Solo las reglas no `unsupported` entran en la región. Una regla
+  desactivada se conserva como `if allof(false, …)`.
+- La región va entre `# NetMail rules begin v1` y `# NetMail rules end`, con una
+  línea `# netmail-rule {"id","name","revision"}` por regla. El comentario solo
+  aporta identidad: la importación reconstruye el IR desde el AST y marca
+  `reversible` solo si regenerarlo reproduce el mismo AST normalizado.
+- `rules_apply_region_json` exige `expected_region` exacto (o `null` sin región),
+  añade los `require` que falten y rechaza añadir la región detrás de
+  `stop`/`discard`/`reject`/`redirect` sin `allow_append_after_control_flow`.
+- Snapshot de evaluación: `headers` decodificados (nombre → valores),
+  `headers_complete`, listas de direcciones `from`/`sender`/`to`/`cc` (addr-spec),
+  `size`, `has_attachment`, `attachment_names`, `body_text` (≤ 1 MiB) y
+  `body_truncated`. Un dato ausente nunca es falso: la regla queda pendiente y el
+  mensaje se devuelve `deferred` con `missing`, sin acciones parciales.
 
 ## Edición de ausencia
 
@@ -156,4 +212,7 @@ específicos. No se promete portabilidad universal ni intercambiabilidad glibc/m
 ## Licencia
 
 Adaptador y referencia: MIT OR Apache-2.0. Se conservan los autores, fuentes,
-metadatos y procedencia publicados de la dependencia en `vendor/`.
+metadatos y procedencia publicados de la dependencia en `vendor/`. Dependencias
+añadidas en 0.3.0: `encoding_rs` ((Apache-2.0 OR MIT) AND BSD-3-Clause, datos de
+WHATWG) y `unicode-normalization` ((MIT OR Apache-2.0) AND Unicode-3.0), con sus
+dependencias MIT/Apache/Zlib. No hay dependencias AGPL.

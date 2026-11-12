@@ -9,24 +9,22 @@
 //! case-insensitive byte ops (`slice::eq_ignore_ascii_case`) plus
 //! memchr2-anchored substring search.
 
+#[cfg(test)]
 use crate::ast::MatchType;
 
-/// Match-type comparison. All comparisons are case-insensitive.
+/// Match-type comparison with the RFC 5228 default `i;ascii-casemap`
+/// comparator. NetMail patch: `:matches` delegates to
+/// [`crate::compare::match_value`] (UTF-8 `?`, `\` escapes).
+#[cfg(test)]
 pub(crate) fn match_string(mt: MatchType, haystack: &str, needle: &str) -> bool {
-    let h = haystack.as_bytes();
-    let n = needle.as_bytes();
-    match mt {
-        MatchType::Is => h.eq_ignore_ascii_case(n),
-        MatchType::Contains => contains_ci(h, n),
-        MatchType::Matches => glob_match_ci(h, n),
-    }
+    crate::compare::match_value(mt, crate::compare::Comparator::AsciiCasemap, haystack, needle)
 }
 
 /// Case-insensitive substring search. Uses `memchr2` on the
 /// lowercase + uppercase variant of the needle's first byte to
 /// jump from candidate to candidate without re-scanning every
 /// position.
-fn contains_ci(haystack: &[u8], needle: &[u8]) -> bool {
+pub(crate) fn contains_ci(haystack: &[u8], needle: &[u8]) -> bool {
     if needle.is_empty() {
         return true;
     }
@@ -36,159 +34,10 @@ fn contains_ci(haystack: &[u8], needle: &[u8]) -> bool {
     find_first_ci(haystack, needle).is_some()
 }
 
-/// Tiny glob matcher: `*` matches any sequence, `?` matches one
-/// byte. ASCII-only — sufficient for RFC 5228 `:matches`. Only
-/// referenced by the test module; the live path goes through
-/// `match_string` → `glob_match_ci` directly.
+/// Test helper kept for the reference unit tests below.
 #[cfg(test)]
 fn glob_match(haystack: &str, pattern: &str) -> bool {
-    glob_match_ci(haystack.as_bytes(), pattern.as_bytes())
-}
-
-/// Case-insensitive glob match. Splits the pattern on `*` and
-/// searches each literal chunk in order; the recursive
-/// byte-by-byte path is replaced by `memchr2`-anchored substring
-/// search inside each chunk.
-fn glob_match_ci(haystack: &[u8], pattern: &[u8]) -> bool {
-    if pattern.is_empty() {
-        return haystack.is_empty();
-    }
-
-    let is_anchored_start = pattern[0] != b'*';
-    let is_anchored_end = pattern[pattern.len() - 1] != b'*';
-
-    // Split the pattern on `*`, collapsing runs of `*` (`**` ≡ `*`).
-    let mut chunks: Vec<&[u8]> = Vec::with_capacity(4);
-    let mut start = 0;
-    let mut i = 0;
-    while i < pattern.len() {
-        if pattern[i] == b'*' {
-            if start < i {
-                chunks.push(&pattern[start..i]);
-            }
-            while i < pattern.len() && pattern[i] == b'*' {
-                i += 1;
-            }
-            start = i;
-        } else {
-            i += 1;
-        }
-    }
-    if start < pattern.len() {
-        chunks.push(&pattern[start..]);
-    }
-
-    if chunks.is_empty() {
-        // Pattern was entirely `*`s.
-        return true;
-    }
-
-    let mut cursor = 0usize;
-    let last = chunks.len() - 1;
-    for (idx, chunk) in chunks.iter().enumerate() {
-        let must_anchor_start = idx == 0 && is_anchored_start;
-        let must_anchor_end = idx == last && is_anchored_end;
-
-        if must_anchor_start {
-            if cursor + chunk.len() > haystack.len() {
-                return false;
-            }
-            if !match_chunk_ci(&haystack[cursor..cursor + chunk.len()], chunk) {
-                return false;
-            }
-            cursor += chunk.len();
-        } else if must_anchor_end {
-            if chunk.len() > haystack.len().saturating_sub(cursor) {
-                return false;
-            }
-            let tail_start = haystack.len() - chunk.len();
-            if tail_start < cursor {
-                return false;
-            }
-            if !match_chunk_ci(&haystack[tail_start..], chunk) {
-                return false;
-            }
-            cursor = haystack.len();
-        } else {
-            match find_chunk_ci(&haystack[cursor..], chunk) {
-                Some(rel) => cursor += rel + chunk.len(),
-                None => return false,
-            }
-        }
-    }
-
-    // When the pattern's tail is anchored (no trailing `*`) the
-    // last chunk must consume the haystack right to its end. The
-    // must_anchor_end branch above pushes cursor to haystack.len()
-    // for multi-chunk patterns, but a single-chunk pattern that is
-    // both prefix- AND suffix-anchored only fires must_anchor_start,
-    // so re-check here.
-    if is_anchored_end {
-        cursor == haystack.len()
-    } else {
-        true
-    }
-}
-
-/// Equal-length comparison treating `?` in `chunk` as a wildcard
-/// and other bytes as case-insensitive literals.
-fn match_chunk_ci(haystack: &[u8], chunk: &[u8]) -> bool {
-    if haystack.len() != chunk.len() {
-        return false;
-    }
-    for (h, p) in haystack.iter().zip(chunk.iter()) {
-        if *p == b'?' {
-            continue;
-        }
-        if !h.eq_ignore_ascii_case(p) {
-            return false;
-        }
-    }
-    true
-}
-
-/// Find the leftmost case-insensitive position where `chunk`
-/// matches inside `haystack`. `?` in chunk is a one-byte wildcard.
-fn find_chunk_ci(haystack: &[u8], chunk: &[u8]) -> Option<usize> {
-    if chunk.is_empty() {
-        return Some(0);
-    }
-    if chunk.len() > haystack.len() {
-        return None;
-    }
-    if !chunk.contains(&b'?') {
-        return find_first_ci(haystack, chunk);
-    }
-    // Anchor on the first non-`?` byte (if any) via memchr2 to
-    // skip dead candidate starts.
-    let anchor_off = match chunk.iter().position(|&c| c != b'?') {
-        Some(o) => o,
-        None => return Some(0), // all `?` — matches every offset
-    };
-    let anchor = chunk[anchor_off];
-    let lo = anchor.to_ascii_lowercase();
-    let up = anchor.to_ascii_uppercase();
-    let mut start = 0;
-    while start + chunk.len() <= haystack.len() {
-        let search_from = start + anchor_off;
-        if search_from >= haystack.len() {
-            return None;
-        }
-        let rel = memchr::memchr2(lo, up, &haystack[search_from..])?;
-        let abs_anchor = search_from + rel;
-        if abs_anchor < anchor_off {
-            return None;
-        }
-        let candidate = abs_anchor - anchor_off;
-        if candidate + chunk.len() > haystack.len() {
-            return None;
-        }
-        if match_chunk_ci(&haystack[candidate..candidate + chunk.len()], chunk) {
-            return Some(candidate);
-        }
-        start = candidate + 1;
-    }
-    None
+    match_string(MatchType::Matches, haystack, pattern)
 }
 
 /// Case-insensitive byte search for `needle` (no `?` wildcard) in

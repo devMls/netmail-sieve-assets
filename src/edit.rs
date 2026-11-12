@@ -30,7 +30,11 @@ fn command_scope() -> String {
     "command".into()
 }
 
-fn patch(source: &str, mut edits: Vec<Edit>, warnings: Vec<&str>) -> Result<Value, String> {
+pub(crate) fn patch(
+    source: &str,
+    mut edits: Vec<Edit>,
+    warnings: Vec<&str>,
+) -> Result<Value, String> {
     edits.sort_by_key(|e| (e.start, e.end));
     let mut end = 0;
     for e in &edits {
@@ -199,40 +203,58 @@ pub fn edit(original: &str, request: Request) -> Result<Value, String> {
         }
         _ => return Err("InvalidRequest: operation must be append, replace or remove".into()),
     }
-    let existing = analysis::capabilities(&doc);
-    let missing: Vec<_> = caps.difference(&existing).collect();
-    if !missing.is_empty() {
-        let position = doc
-            .commands
-            .iter()
-            .zip(&doc.nodes)
-            .find(|(c, _)| c.name != "require")
-            .map_or(original.len(), |(_, n)| n.start);
-        let quoted: Vec<_> = missing
-            .iter()
-            .map(|s| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")))
-            .collect();
-        let prefix = if position > 0 && !original[..position].ends_with(char::is_whitespace) {
-            "\r\n"
-        } else {
-            ""
-        };
-        let declaration = format!("{prefix}require [{}];\r\n", quoted.join(", "));
-        if let Some(insertion) = edits
-            .iter_mut()
-            .find(|e| e.start == position && e.end == position)
-        {
-            insertion.replacement.insert_str(0, &declaration);
-        } else {
-            edits.push(Edit {
-                start: position,
-                end: position,
-                expected: String::new(),
-                replacement: declaration,
-            });
-        }
-    }
+    add_requires(original, &doc, &caps, &mut edits, None);
     patch(original, edits, warnings)
+}
+
+/// Declare the capabilities missing from `doc` before its first executable
+/// command, merging with an insertion edit at the same position.
+pub(crate) fn add_requires(
+    original: &str,
+    doc: &source::Document,
+    caps: &BTreeSet<String>,
+    edits: &mut Vec<Edit>,
+    replaced: Option<(usize, usize)>,
+) {
+    let existing = analysis::capabilities(doc);
+    let missing: Vec<_> = caps.difference(&existing).collect();
+    if missing.is_empty() {
+        return;
+    }
+    let position = doc
+        .commands
+        .iter()
+        .zip(&doc.nodes)
+        .find(|(c, _)| c.name != "require")
+        .map_or(original.len(), |(_, n)| n.start);
+    // Never insert inside a range that another edit replaces.
+    let position = match replaced {
+        Some((start, end)) if start < position && position < end => start,
+        _ => position,
+    };
+    let quoted: Vec<_> = missing
+        .iter()
+        .map(|s| format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")))
+        .collect();
+    let prefix = if position > 0 && !original[..position].ends_with(char::is_whitespace) {
+        "\r\n"
+    } else {
+        ""
+    };
+    let declaration = format!("{prefix}require [{}];\r\n", quoted.join(", "));
+    if let Some(insertion) = edits
+        .iter_mut()
+        .find(|e| e.start == position && e.end == position)
+    {
+        insertion.replacement.insert_str(0, &declaration);
+    } else {
+        edits.push(Edit {
+            start: position,
+            end: position,
+            expected: String::new(),
+            replacement: declaration,
+        });
+    }
 }
 
 pub fn merge(original: &str, snippet: &str) -> Result<Value, String> {

@@ -20,6 +20,12 @@ def smoke(path, expected_arch=None):
         "sieve_edit_vacation_json": [ctypes.c_char_p, ctypes.c_char_p],
         "sieve_eval_actions_json": [ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t],
         "sieve_eval_actions_with_envelope_json": [ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_char_p],
+        "rules_catalog_json": [],
+        "rules_validate_json": [ctypes.c_char_p],
+        "rules_compile_sieve_json": [ctypes.c_char_p],
+        "rules_import_sieve_json": [ctypes.c_char_p],
+        "rules_apply_region_json": [ctypes.c_char_p, ctypes.c_char_p],
+        "rules_evaluate_batch_json": [ctypes.c_char_p, ctypes.c_char_p],
     }
     for name, arguments in signatures.items():
         getattr(lib, name).argtypes = arguments
@@ -65,6 +71,27 @@ def smoke(path, expected_arch=None):
     assert call("sieve_eval_actions_with_envelope_json", script, msg, len(msg), env)["actions"][0]["type"] == "discard"
     assert call("sieve_merge_vacation", old, b"\xff")["success"] is False
     assert call("sieve_merge_vacation", None, new)["success"] is False
+    # Rule IR: compile, apply, import, evaluate locally and through Sieve.
+    assert "rules_ir_v1" in info["features"]
+    assert call("rules_catalog_json")["fields"]["subject"]["sieve"]["level"] == "exact"
+    rules = {"schema": 1, "rules": [{"id": "r1", "name": "Facturas",
+        "conditions": [{"field": "subject", "op": "contains", "values": ["Factura nº"]}],
+        "actions": [{"type": "mark_read"}, {"type": "move", "mailbox": "Facturas"}]}]}
+    rules_json = json.dumps(rules).encode()
+    assert call("rules_validate_json", rules_json)["success"]
+    compiled = call("rules_compile_sieve_json", json.dumps({"rules": rules, "server_capabilities": ["fileinto", "imap4flags"]}).encode())
+    assert compiled["rules"][0]["sieve"] == "exact", compiled
+    applied = call("rules_apply_region_json", b"", json.dumps({"region": compiled["region"], "require": compiled["require"], "expected_region": None}).encode())
+    script = applied["script"].encode()
+    imported = call("rules_import_sieve_json", script)
+    assert imported["rules"][0]["reversible"] and imported["rules"][0]["rule"]["id"] == "r1", imported
+    message = "Subject: =?UTF-8?Q?Factura_n=C2=BA_7?=\r\n\r\n".encode()
+    sieve = call("sieve_eval_actions_json", script, message, len(message))["actions"]
+    snapshot = json.dumps([{"id": "m", "headers": {"Subject": ["Factura nº 7"]}, "headers_complete": True}]).encode()
+    local = call("rules_evaluate_batch_json", rules_json, snapshot)["results"][0]["actions"]
+    assert sieve == [{"type": "fileinto", "mailbox": "Facturas", "flags": ["\\Seen"]}], sieve
+    assert [{k: v for k, v in a.items() if k not in ("copy", "rule_id")} for a in local] == sieve, local
+    assert call("rules_evaluate_batch_json", None, snapshot)["success"] is False
     lib.sieve_free_string(None)
     return info
 

@@ -24,6 +24,14 @@ char *sieve_edit_vacation_json(const char *script, const char *request_json);
 char *sieve_eval_actions_json(const char *script, const uint8_t *message, size_t message_len);
 char *sieve_eval_actions_with_envelope_json(const char *script, const uint8_t *message,
                                          size_t message_len, const char *envelope_json);
+/* Rule IR netmail.rules/1 (feature "rules_ir_v1"). Rule sets and requests: 256 KiB;
+ * message snapshot batches: 16 MiB, at most 1000 messages. No I/O. */
+char *rules_catalog_json(void);
+char *rules_validate_json(const char *rules_json);
+char *rules_compile_sieve_json(const char *request_json);
+char *rules_import_sieve_json(const char *script);
+char *rules_apply_region_json(const char *script, const char *request_json);
+char *rules_evaluate_batch_json(const char *rules_json, const char *messages_json);
 void sieve_free_string(char *result);
 #ifdef __cplusplus
 }

@@ -27,6 +27,16 @@ impl<'m> MessageContext<'m> {
             .collect()
     }
 
+    /// NetMail patch `netmail-rules-1`: header values with RFC 2047
+    /// encoded words decoded (RFC 5228 §2.7.2). Address tests keep the
+    /// raw value: a decoded display name may contain list separators.
+    pub(super) fn decoded_header_values(&self, name: &str) -> Vec<String> {
+        self.header_values(name)
+            .iter()
+            .map(|value| crate::encoded_word::decode_encoded_words(value))
+            .collect()
+    }
+
     /// Total message size in bytes — what `size :over` / `:under`
     /// compares against.
     pub(super) fn body_size(&self) -> u64 {

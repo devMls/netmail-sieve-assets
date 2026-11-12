@@ -37,6 +37,8 @@
 mod address;
 mod ast;
 mod capabilities;
+mod compare;
+mod encoded_word;
 mod eval;
 mod lex;
 mod match_str;
@@ -46,7 +48,10 @@ mod vacation;
 pub use ast::{
     Action, Argument, Command, Envelope, MatchType, Test, VacationAction, VacationPeriod,
 };
+pub use address::{AddressPart, extract_addresses, scope_to_part};
 pub use capabilities::validate;
+pub use compare::{Comparator, escape_glob, match_value};
+pub use encoded_word::decode_encoded_words;
 pub use eval::{EvalError, eval_script, eval_script_with_envelope};
 pub use lex::{SpannedToken, Token, TokenizeError, tokenize, tokenize_spanned};
 pub use parse::{ParseError, parse_script};
