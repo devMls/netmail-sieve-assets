@@ -136,34 +136,26 @@ pub fn emit_condition(c: &Condition) -> String {
     }
 }
 
-fn group(mode: &str, tests: Vec<String>) -> String {
-    if tests.len() == 1 {
-        tests.into_iter().next().unwrap_or_default()
-    } else {
-        format!("{mode}({})", tests.join(", "))
-    }
-}
-
 pub fn emit_test(rule: &Rule) -> String {
+    // The emitted shape is canonical so `rules_import_sieve_json` recovers
+    // the exact IR (BACKLOG-44 H8):
+    // - one `all` condition is emitted bare; one `any` condition as
+    //   `anyof(C)`, so the match mode survives the round trip;
+    // - exceptions are always `not anyof(…)`, even a single one. A negated
+    //   condition is `not T` and never `not anyof`, so `allof(C, not E)`
+    //   (negated condition) and `allof(C, not anyof(E))` (exception) differ.
     let conditions: Vec<_> = rule.conditions.iter().map(emit_condition).collect();
-    let main = if conditions.is_empty() {
-        "true".to_string()
-    } else {
-        group(
-            match rule.match_mode {
-                MatchMode::All => "allof",
-                MatchMode::Any => "anyof",
-            },
-            conditions,
-        )
+    let main = match (conditions.len(), rule.match_mode) {
+        (0, _) => "true".to_string(),
+        (1, MatchMode::All) => conditions[0].clone(),
+        (_, MatchMode::All) => format!("allof({})", conditions.join(", ")),
+        (_, MatchMode::Any) => format!("anyof({})", conditions.join(", ")),
     };
     let test = if rule.exceptions.is_empty() {
         main
     } else {
-        let exceptions = group(
-            "anyof",
-            rule.exceptions.iter().map(emit_condition).collect(),
-        );
+        let exceptions: Vec<_> = rule.exceptions.iter().map(emit_condition).collect();
+        let exceptions = format!("anyof({})", exceptions.join(", "));
         if main == "true" {
             format!("not {exceptions}")
         } else {

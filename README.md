@@ -1,7 +1,7 @@
 # netmail-sieve-assets
 
 Runtime C-ABI para [NetMail](https://gitlab.com/mls_dev/netmail), basado en
-`mailrs-sieve-core 0.3.0` (MIT OR Apache-2.0). Versión del adaptador: **0.3.0**;
+`mailrs-sieve-core 0.3.0` (MIT OR Apache-2.0). Versión del adaptador: **0.3.1**;
 ABI y esquema JSON: **2**; IR de reglas: **`netmail.rules/1`** (feature `rules_ir_v1`). El motor no realiza I/O, publica scripts ni envía correo.
 
 ## Uso de la referencia
@@ -131,6 +131,14 @@ regla/mensaje contra `sieve_eval_actions_json` del script compilado.
   línea `# netmail-rule {"id","name","revision"}` por regla. El comentario solo
   aporta identidad: la importación reconstruye el IR desde el AST y marca
   `reversible` solo si regenerarlo reproduce el mismo AST normalizado.
+- Forma canónica (0.3.1): la validación devuelve las acciones en orden de
+  ejecución (flags, entregas, `stop`, sin flags repetidos), `match: all` si no hay
+  condiciones y `header` sobre `subject`/`list-id` como su campo propio. El
+  compilador emite las excepciones siempre como `not anyof(…)` (también una sola)
+  y una única condición `any` como `anyof(C)`, de modo que `compile → import`
+  devuelve exactamente el IR canónico; la prueba generativa lo exige en sus 300
+  conjuntos. Los scripts de 0.3.0 se siguen importando con el mismo significado
+  (una excepción única de entonces vuelve como condición negada).
 - `rules_apply_region_json` exige `expected_region` exacto (o `null` sin región),
   añade los `require` que falten y rechaza añadir la región detrás de
   `stop`/`discard`/`reject`/`redirect` sin `allow_append_after_control_flow`.

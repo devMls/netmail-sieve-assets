@@ -292,6 +292,52 @@ fn imports_roundcube_rules_and_preserves_the_rest() {
 }
 
 #[test]
+fn exceptions_and_match_mode_round_trip_exactly() {
+    // H8: a single exception used to come back as a negated condition, and
+    // one `any` condition as `all`. Negated conditions must stay conditions.
+    let subject = json!({"field": "subject", "op": "contains", "values": ["Factura"]});
+    let spam = json!({"field": "from", "op": "ends_with", "address_part": "domain", "values": ["spam.test"]});
+    let negated = json!({"field": "list_id", "op": "exists", "negate": true});
+    let rules = set(json!([
+        {"id": "one-exception", "name": "A", "conditions": [subject], "exceptions": [spam],
+         "actions": [{"type": "flag"}]},
+        {"id": "only-exception", "name": "B", "exceptions": [spam], "actions": [{"type": "flag"}]},
+        {"id": "negated-condition", "name": "C", "conditions": [subject, negated],
+         "actions": [{"type": "flag"}]},
+        {"id": "any-single", "name": "D", "match": "any", "conditions": [subject],
+         "exceptions": [negated], "actions": [{"type": "flag"}]},
+        {"id": "disabled", "name": "E", "enabled": false, "match": "any", "conditions": [subject],
+         "exceptions": [spam], "actions": [{"type": "flag"}]},
+        {"id": "no-conditions", "name": "F", "match": "any", "actions": [{"type": "flag"}]}
+    ]));
+    let script = script_for(&rules, ALL_CAPS);
+    assert!(
+        script.contains("allof(header :contains \"subject\" \"Factura\", not anyof(address"),
+        "{script}"
+    );
+    let imported = ok(import(&script));
+    let back: Vec<Value> = imported["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            assert_eq!(r["reversible"], true, "{r}");
+            r["rule"].clone()
+        })
+        .collect();
+    let canonical: Value =
+        serde_json::from_str(ok(validate(&rules))["canonical"].as_str().unwrap()).unwrap();
+    assert_eq!(json!(back), canonical["rules"]);
+    // An `any` rule without conditions is canonically `all`.
+    assert_eq!(canonical["rules"][5]["match"], "all");
+    // Scripts compiled by 0.3.0 still import with the same meaning.
+    let old = "require \"imap4flags\";\r\nif allof(header :contains \"subject\" \"Factura\", not address :domain :matches \"from\" \"*spam.test\") { addflag \"\\\\Flagged\"; }\r\n";
+    let rule = &ok(import(old))["rules"][0]["rule"];
+    assert_eq!(rule["conditions"][1]["negate"], true);
+    assert_eq!(rule["exceptions"], json!([]));
+}
+
+#[test]
 fn non_canonical_forms_import_but_are_not_reversible() {
     let script = "require \"fileinto\";\r\nif header :is :comparator \"i;octet\" \"subject\" \"A\" { fileinto \"X\"; }\r\n";
     let imported = ok(import(script));
@@ -589,7 +635,8 @@ fn local_plan_equals_reference_sieve_evaluation() {
             "{compiled}"
         );
         let script = script_for(&rules, &["fileinto", "imap4flags", "copy"]);
-        // Round trip: every generated rule is recognised and reversible.
+        // Round trip: every generated rule is recognised, reversible and
+        // comes back as exactly the same IR (H8: exceptions, match mode).
         let imported = ok(import(&script));
         assert!(
             imported["rules"]
@@ -599,6 +646,15 @@ fn local_plan_equals_reference_sieve_evaluation() {
                 .all(|r| r["reversible"] == true),
             "{imported}"
         );
+        let canonical: Value =
+            serde_json::from_str(ok(validate(&rules))["canonical"].as_str().unwrap()).unwrap();
+        let back: Vec<Value> = imported["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["rule"].clone())
+            .collect();
+        assert_eq!(json!(back), canonical["rules"], "script={script}");
         let messages: Vec<(Vec<u8>, Value)> = (0..8).map(|i| random_message(&mut rng, i)).collect();
         let snapshots = json!(messages.iter().map(|(_, s)| s.clone()).collect::<Vec<_>>());
         let local = ok(evaluate(&rules, &snapshots));

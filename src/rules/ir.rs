@@ -15,6 +15,9 @@
 //! - `move` files the message and cancels the implicit keep; `copy` files
 //!   a copy and keeps it. Several moves produce several deliveries,
 //!   exactly as in Sieve.
+//! - Canonical form (returned by validation and by the importer): actions
+//!   in that execution order with repeated flags once, and `match: all`
+//!   when there are no conditions. `compile → import` yields it exactly.
 use serde::{Deserialize, Serialize};
 
 pub const SCHEMA: u32 = 1;
@@ -198,6 +201,23 @@ pub enum RuleAction {
     },
 }
 
+impl Condition {
+    /// A generic `header` condition on a header that has its own field
+    /// (header names are case-insensitive) is that field.
+    pub fn canonicalise_header(&mut self) {
+        if self.field != Field::Header {
+            return;
+        }
+        let field = match self.header.as_deref() {
+            Some(h) if h.eq_ignore_ascii_case("subject") => Field::Subject,
+            Some(h) if h.eq_ignore_ascii_case("list-id") => Field::ListId,
+            _ => return,
+        };
+        self.field = field;
+        self.header = None;
+    }
+}
+
 impl RuleAction {
     pub fn flag(&self) -> Option<&str> {
         match self {
@@ -229,8 +249,22 @@ impl Rule {
 }
 
 pub fn parse_rule_set(text: &str) -> Result<RuleSet, String> {
-    let set: RuleSet = serde_json::from_str(text).map_err(|e| format!("InvalidRules: {e}"))?;
+    let mut set: RuleSet = serde_json::from_str(text).map_err(|e| format!("InvalidRules: {e}"))?;
     validate(&set)?;
+    // Canonical form, so compile → import returns the same IR and clients
+    // show what actually runs:
+    // - without conditions the match mode means nothing (`anyof()` is not
+    //   valid Sieve and every message matches), so it is `all`;
+    // - actions are listed in execution order (flags, deliveries, `stop`).
+    for rule in &mut set.rules {
+        if rule.conditions.is_empty() {
+            rule.match_mode = MatchMode::All;
+        }
+        rule.actions = rule.canonical_actions().into_iter().cloned().collect();
+        for c in rule.conditions.iter_mut().chain(rule.exceptions.iter_mut()) {
+            c.canonicalise_header();
+        }
+    }
     Ok(set)
 }
 
